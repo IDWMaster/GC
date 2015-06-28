@@ -11,7 +11,7 @@ static inline void MEM_Init(void* region, size_t sz) {
     //Number of pointers in list
     //List of pointers (write barriers)
   ptr[0] = sz;
-  ptr[1] = ptr+3;
+  ptr[1] = (size_t)(ptr+3);
   ptr[2] = 0;
   ptr[3] = 0;
 }
@@ -26,14 +26,14 @@ static inline size_t MEM_ListLength(void* region) {
 
 static inline void MEM_AddPtr(void* region, void* ptr) {
   size_t* rptr = (size_t*)region;
-  rptr[3+rptr[2]] = ptr;
+  rptr[3+rptr[2]] = (size_t)ptr;
 }
 static inline void MEM_RemovePtr(void* region, void* ptr) {
   size_t* meta_start = (size_t*)region;
   
   size_t* rptr = ((size_t*)region)+3;
   size_t i;
-  for(i = 0;rptr[i] != ptr;i++) {};
+  for(i = 0;rptr[i] != (size_t)ptr;i++) {};
   
   memmove(rptr+i,rptr+meta_start[2],meta_start[2]-(i*sizeof(size_t)));
   meta_start[2]--;
@@ -41,13 +41,13 @@ static inline void MEM_RemovePtr(void* region, void* ptr) {
 
 static inline size_t MEM_DataSize(void* region) {
   size_t* ptr = (size_t*)region;
-  return ptr[1]-ptr;
+  return ptr[1]-(size_t)ptr;
 }
 
 static inline size_t MEM_MovePtr(void* dest, void* src) {
   size_t* ptr = (size_t*)src;
   for(size_t i = 0;i<ptr[2];i++) {
-    void** d = ptr[i+3];
+    void** d = (void**)ptr[i+3];
     *d = dest;
   }
 }
@@ -59,10 +59,6 @@ public:
   unsigned char* memory;
   size_t marker;
   size_t genSz;
-  
-  size_t* freeList;
-  size_t freeList_size;
-  size_t freeList_capacity;
   GCGeneration() {
     memory_unaligned = new unsigned char[1024*1024*5];
     size_t start_addr = (size_t)memory_unaligned;
@@ -71,27 +67,38 @@ public:
     memory = (unsigned char*)start_addr;
     genSz = 1024*1024*5-(start_addr-orig_addr);
     marker = 0;
-    freeList_size = 0;
-    freeList_capacity = 0;
-    freeList = 0;
     next = 0;
   }
-  void Free(void* ptr) {
-    //Add object to free list
-    if(freeList == 0) {
-      freeList = new size_t[1];
-      freeList[0] = ptr;
-      return;
+  void Compact() {
+   //Go through all memory chunks, find free ones, and move them to the left one by one
+    
+    size_t offset = 0;
+    while(true) {
+      if(offset == marker) {
+	//Compaction cycle complete.
+	break;
+      }
+      size_t fragsz;
+      memcpy(&fragsz,memory+offset,sizeof(fragsz));
+      if(MEM_ListLength(memory+offset) == 0) {
+	//Free segment found. Move memory from right of this region into current one
+	if(memory+offset+fragsz == marker) {
+	  //End of list encountered. Compaction complete.
+	  break;
+	}
+	//Update all pointers to this memory segment
+	MEM_MovePtr(memory+offset,memory+offset+fragsz);
+	//Copy contents to this segment
+	memcpy(memory+offset,memory+offset+fragsz,*((size_t*)(memory+offset+fragsz)));
+	//Fragment size may have changed. Process before moving to next segment.
+	memcpy(&fragsz,memory+offset,sizeof(fragsz));
+      }
+      //Move to next segment
+      offset+=fragsz;
+      
+      
+      
     }
-    if(freeList_capacity-freeList_size == 0) {
-      size_t newCapacity = freeList_capacity*2;
-      size_t* newList = new size_t[newCapacity];
-      memcpy(newList,freeList,freeList_size*sizeof(size_t));
-      delete[] freeList;
-      freeList = newList;
-      freeList_capacity = newCapacity;
-    }
-    freeList[freeList_size] = ptr;
   }
   size_t Available() {
     return genSz-marker;
@@ -112,6 +119,7 @@ public:
     MEM_AddPtr(realPtr,&ptr);
     
   }
+  
   void WB_Unmark(void*& ptr) {
     MEM_RemovePtr(ptr,&ptr);
   }
@@ -119,7 +127,7 @@ public:
     if(sz>Available()) {
       return 0;
     }
-    void* retval = marker+sz;
+    void* retval = memory+marker+sz;
     marker+=sz;
     return retval;
   }
@@ -131,7 +139,7 @@ public:
       sz += sizeof(size_t)-(sz % sizeof(size_t));
       void* retval = Unsafe_Allocate(sz);
       if(retval) {
-	MEM_Init(retval);
+	MEM_Init(retval,sz);
 	return retval;
       }
       return 0;
@@ -139,8 +147,8 @@ public:
   GCGeneration* next;
   bool Contains(void* ptr) {
     size_t c = (size_t)ptr;
-    size_t a = memory;
-    size_t b = memory+marker;
+    size_t a = (size_t)memory;
+    size_t b = (size_t)memory+marker;
     return c>=a && c<=b;
   }
   ~GCGeneration() {
@@ -166,13 +174,15 @@ public:
 };
 extern "C" {
   void* GC_Init(size_t generations) {
-    return new GCPool();
+    return new GCPool(generations);
   }
   void GC_Allocate(void* gc,size_t sz, void** output) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
     void* ptr = gen->Allocate(sz);
     *output = ptr;
+    if(ptr != 0) {
     gen->WB_Mark(*output);
+    }
   }
   void GC_Unmark(void* gc,void** ptr) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
