@@ -82,6 +82,8 @@ public:
       if(offset == marker) {
 	//Compaction cycle complete.
 	marker = allocBreak;
+	
+	  std::cerr<<"Marker updated to "<<marker<<std::endl;;
 	break;
       }
       size_t fragsz;
@@ -90,7 +92,7 @@ public:
 	throw "memory corrupt";
       }
       if(MEM_ListLength(memory+offset) == 0) {
-	std::cerr<<"Free move\n";
+	//std::cerr<<"Free move\n";
 	//Free segment found. Move memory from right of this region into current one
 	if((size_t)(memory+offset+fragsz) == marker) {
 	  //End of list encountered. Compaction complete. Update marker
