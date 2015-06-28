@@ -80,6 +80,9 @@ public:
       }
       size_t fragsz;
       memcpy(&fragsz,memory+offset,sizeof(fragsz));
+      if(fragsz == 0) {
+	throw "memory corrupt";
+      }
       if(MEM_ListLength(memory+offset) == 0) {
 	//Free segment found. Move memory from right of this region into current one
 	if((size_t)(memory+offset+fragsz) == marker) {
@@ -96,7 +99,6 @@ public:
       }
       //Move to next segment
       offset+=fragsz;
-      
       
       
     }
@@ -128,7 +130,7 @@ public:
     if(sz>Available()) {
       return 0;
     }
-    void* retval = memory+marker+sz;
+    void* retval = memory+marker;
     marker+=sz;
     return retval;
   }
