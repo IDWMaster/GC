@@ -60,6 +60,7 @@ public:
   unsigned char* memory;
   size_t marker;
   size_t genSz;
+  size_t liveObjectCount;
   GCGeneration() {
     memory_unaligned = new unsigned char[1024*512];
     size_t start_addr = (size_t)memory_unaligned;
@@ -69,16 +70,15 @@ public:
     genSz = 1024*512-(start_addr-orig_addr);
     marker = 0;
     next = 0;
+    liveObjectCount = 0;
   }
   void Compact() {
    //Go through all memory chunks, find free ones, and move them to the left one by one
     size_t allocBreak = 0;
     size_t offset = 0;
-    while(true) {
-      if(offset>marker) {
-      throw "oob"; //out of bounds
-	
-      }
+    size_t foundObjects = 0;
+    while(foundObjects<liveObjectCount) {
+    
       if(offset == marker) {
 	//Compaction cycle complete.
 	marker = allocBreak;
@@ -95,9 +95,7 @@ public:
 	//std::cerr<<"Free move\n";
 	//Free segment found. Move memory from right of this region into current one
 	if((size_t)(memory+offset+fragsz) == marker) {
-	  //End of list encountered. Compaction complete. Update marker
-	  marker = (size_t)(memory+offset);
-	  std::cerr<<"Marker updated to "<<marker<<std::endl;;
+	  //End-of-list
 	  break;
 	}
 	//Update all pointers to this memory segment
@@ -111,12 +109,15 @@ public:
       }else {
 	//Found in use block, make sure the break is after this block
 	allocBreak = offset+fragsz;
+	foundObjects++;
+	//TODO: Promote this block to the next generation of Star Trek.
       }
       //Move to next segment
       offset+=fragsz;
       
       
     }
+    marker = allocBreak;
   }
   size_t Available() {
     return genSz-marker;
@@ -140,6 +141,14 @@ public:
   
   void WB_Unmark(void*& ptr) {
     MEM_RemovePtr(ptr,&ptr);
+    if(MEM_ListLength(ptr) == 0) {
+      //Object can be reclaimed (no longer alive)
+      liveObjectCount--;
+      if(liveObjectCount == 0) {
+	//Set marker to initial position (reduces number of memory fragments and prevents unncessary growth of pool)
+	marker = 0;
+      }
+    }
   }
   void* Unsafe_Allocate(size_t sz) {
     if(sz>Available()) {
@@ -158,6 +167,7 @@ public:
       void* retval = Unsafe_Allocate(sz);
       if(retval) {
 	MEM_Init(retval,sz);
+	liveObjectCount++;
 	return retval;
       }
       return 0;
