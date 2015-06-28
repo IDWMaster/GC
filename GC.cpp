@@ -82,8 +82,9 @@ public:
       memcpy(&fragsz,memory+offset,sizeof(fragsz));
       if(MEM_ListLength(memory+offset) == 0) {
 	//Free segment found. Move memory from right of this region into current one
-	if(memory+offset+fragsz == marker) {
-	  //End of list encountered. Compaction complete.
+	if((size_t)(memory+offset+fragsz) == marker) {
+	  //End of list encountered. Compaction complete. Update marker
+	  marker = (size_t)(memory+offset);
 	  break;
 	}
 	//Update all pointers to this memory segment
@@ -153,9 +154,6 @@ public:
   }
   ~GCGeneration() {
     delete[] memory_unaligned;
-    if(freeList) {
-      delete[] freeList;
-    }
     if(next) {
       delete next;
     }
@@ -179,6 +177,12 @@ extern "C" {
   void GC_Allocate(void* gc,size_t sz, void** output) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
     void* ptr = gen->Allocate(sz);
+    if(ptr == 0) {
+      //Compact
+      gen->Compact();
+      ptr = gen->Allocate(sz);
+      //TODO: Increase total size of pool
+    }
     *output = ptr;
     if(ptr != 0) {
     gen->WB_Mark(*output);
