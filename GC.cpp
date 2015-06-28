@@ -61,12 +61,12 @@ public:
   size_t marker;
   size_t genSz;
   GCGeneration() {
-    memory_unaligned = new unsigned char[1024*1024*5];
+    memory_unaligned = new unsigned char[1024*512];
     size_t start_addr = (size_t)memory_unaligned;
     size_t orig_addr = start_addr;
     start_addr+=sizeof(size_t)-(start_addr % sizeof(size_t));
     memory = (unsigned char*)start_addr;
-    genSz = 1024*1024*5-(start_addr-orig_addr);
+    genSz = 1024*512-(start_addr-orig_addr);
     marker = 0;
     next = 0;
   }
@@ -83,7 +83,7 @@ public:
 	//Compaction cycle complete.
 	marker = allocBreak;
 	
-	  std::cerr<<"Marker updated to "<<marker<<std::endl;;
+	//  std::cerr<<"Marker updated to "<<marker<<std::endl;;
 	break;
       }
       size_t fragsz;
