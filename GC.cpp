@@ -4,8 +4,10 @@
 
 
 
-
-
+//Converts an object address to a segment pointer
+static inline void* FindSegmentPointer(void* objAddress) {
+  return (void*)*(((size_t*)objAddress)-1);
+}
 
 
 static inline void MEM_Init(void* region, size_t sz) {
@@ -16,10 +18,13 @@ static inline void MEM_Init(void* region, size_t sz) {
     //Pointer to data segment (fast lookup)
     //Number of pointers in list
     //List of pointers (write barriers)
-  ptr[0] = sz;
-  ptr[1] = (size_t)(ptr+3);
-  ptr[2] = 0;
-  ptr[3] = 0;
+    //Pointer to beginning of memory region
+    //Data segment
+  ptr[0] = sz; //Total size (including header)
+  ptr[1] = (size_t)(ptr+3); //Pointer to data segment
+  ptr[2] = 0; //Number of pointers in list (default 0)
+  ptr[3] = 0; //Empty pointer
+  ptr[4] = (size_t)ptr; //Pointer to allocation header
 }
 
 //Gets the number of pointer entries that this memory region can store
@@ -55,16 +60,21 @@ static inline size_t MEM_DataSize(void* region) {
   return ptr[1]-(size_t)ptr;
 }
 //Updates all pointers to an object, from the src memory chunk to the dest memory chunk
-static inline size_t MEM_MovePtr(void* dest, void* src) {
+//dest -- Destination address to copy to
+//src -- Source address
+//capacityChange -- Number of new elements to add to the list (amount of capacity increase)
+static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 0) {
   size_t* ptr = (size_t*)src;
   size_t* destchunk = (size_t*)dest;
   //Copy all data from ptr to destchunk (we assume that it is big enough -- if it isn't, too bad for you; you're gonna have a really rough time debugging this)
   memcpy(destchunk,ptr,*ptr);
-  destchunk[1] = (ptr[1]-(size_t)ptr)+destchunk; //Updated position = segment offset of data segment+destination address
+  destchunk[1] = (ptr[1]-(size_t)ptr)+destchunk+capacityChange; //Updated position = segment offset of data segment+destination address+(number of new elements in list)
   for(size_t i = 0;i<destchunk[2];i++) {
     void** d = (void**)destchunk[i+3];
     *d = destchunk[1]; //Update all references to point to this new memory address.
   }
+  //TODO: Update segment pointer in dest
+  destchunk[3+destchunk[2]] = destchunk; //TODO: Does this work?
 }
 
 
@@ -148,9 +158,8 @@ public:
       size_t prevCapacity = MEM_ListCapacity(ptr);
       size_t newCapacity = prevCapacity*2;
       //Allocate new block
-      void* newmem = Unsafe_Allocate((3*sizeof(size_t))+newCapacity+MEM_DataSize(ptr));
-      MEM_MovePtr(newmem,ptr);
-      memcpy(newmem,ptr,realPtr[0]);
+      size_t* newmem = (size_t*)Unsafe_Allocate((4*sizeof(size_t))+newCapacity+MEM_DataSize(ptr));
+      MEM_MovePtr(newmem,ptr,newCapacity-prevCapacity);
       ptr = newmem;
     }
     MEM_AddPtr(realPtr,&ptr);
@@ -179,7 +188,7 @@ public:
   //Return pointer to memory space
   void* Allocate(size_t sz) {
    //Ensure enough memory for header
-      sz+=sizeof(size_t)*4;
+      sz+=sizeof(size_t)*5;
     //Align memory allocation request 
       sz += sizeof(size_t)-(sz % sizeof(size_t));
       void* retval = Unsafe_Allocate(sz);
@@ -222,28 +231,23 @@ extern "C" {
   void GC_Allocate(void* gc,size_t sz, void** output) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
     void* ptr = gen->Allocate(sz);
-    if(ptr == 0) {
-      //Compact
-      gen->Compact();
-      ptr = gen->Allocate(sz);
-      if(ptr == 0) {
-	throw "counterclockunwise";
-      //TODO: Increase total size of pool
-      }
-    }
-    *output = ptr;
+    *output = ((void**)ptr)[1];
     if(ptr != 0) {
-    gen->WB_Mark(*output);
+      gen->WB_Mark(ptr);
     }
   }
   void GC_Unmark(void* gc,void** ptr) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
+    //TODO: Given the memory address of an object, find its corresponding memory segment.
+    throw "Not yet implemented";
     while(!gen->Contains(*ptr)) {
       gen = gen->next;
     }
     gen->WB_Unmark(*ptr);
   }
   void GC_Mark(void* gc,void** ptr) {
+    //TODO: Given the memory address of an object, find its corresponding memory segment.
+    throw "Not yet implemented";
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
     while(!gen->Contains(*ptr)) {
       gen = gen->next;
