@@ -2,6 +2,12 @@
 #include <vector>
 #include <string.h>
 
+
+
+
+
+
+
 static inline void MEM_Init(void* region, size_t sz) {
 //Initialize memory region
   size_t* ptr = (size_t*)region;
@@ -15,20 +21,24 @@ static inline void MEM_Init(void* region, size_t sz) {
   ptr[2] = 0;
   ptr[3] = 0;
 }
+
+//Gets the number of pointer entries that this memory region can store
 static inline size_t MEM_ListCapacity(void* region) {
   size_t* ptr = (size_t*)region;
-  return (ptr[1]-(size_t)ptr)/sizeof(size_t);
+  return (ptr[1]-(size_t)ptr)/sizeof(size_t); //Capacity = (DataAddress-SegmentAddress)/WordSize
 }
+//Get the number of pointers currently in the list. 
 static inline size_t MEM_ListLength(void* region) {
   size_t* ptr = ((size_t*)region);
   return ptr[2];
 }
-
+//Inserts a pointer into the list, increasing its length by 1 (assumes that the list has enough capacity to store the element)
 static inline void MEM_AddPtr(void* region, void* ptr) {
   size_t* rptr = (size_t*)region;
   rptr[3+rptr[2]] = (size_t)ptr;
   rptr[2]++;
 }
+//Removes a pointer from the list, decrementing its length by one.
 static inline void MEM_RemovePtr(void* region, void* ptr) {
   size_t* meta_start = (size_t*)region;
   
@@ -39,28 +49,32 @@ static inline void MEM_RemovePtr(void* region, void* ptr) {
   memmove(rptr+i,rptr+meta_start[2],meta_start[2]-(i*sizeof(size_t)));
   meta_start[2]--;
 }
-
+//Computes the length of the data segment of this memory region.
 static inline size_t MEM_DataSize(void* region) {
   size_t* ptr = (size_t*)region;
   return ptr[1]-(size_t)ptr;
 }
-
+//Updates all pointers to an object, from the src memory chunk to the dest memory chunk
 static inline size_t MEM_MovePtr(void* dest, void* src) {
   size_t* ptr = (size_t*)src;
-  for(size_t i = 0;i<ptr[2];i++) {
-    void** d = (void**)ptr[i+3];
-    *d = dest;
+  size_t* destchunk = (size_t*)dest;
+  //Copy all data from ptr to destchunk (we assume that it is big enough -- if it isn't, too bad for you; you're gonna have a really rough time debugging this)
+  memcpy(destchunk,ptr,*ptr);
+  destchunk[1] = (ptr[1]-(size_t)ptr)+destchunk; //Updated position = segment offset of data segment+destination address
+  for(size_t i = 0;i<destchunk[2];i++) {
+    void** d = (void**)destchunk[i+3];
+    *d = destchunk[1]; //Update all references to point to this new memory address.
   }
 }
 
 
 class GCGeneration {
 public:
-  unsigned char* memory_unaligned;
-  unsigned char* memory;
-  size_t marker;
-  size_t genSz;
-  size_t liveObjectCount;
+  unsigned char* memory_unaligned; //Unaligned memory chunk.
+  unsigned char* memory; //Memory chunk aligned to machine-specific word size
+  size_t marker; //Current marker (in bytes) into free-space
+  size_t genSz; //The size of this generation
+  size_t liveObjectCount; //The current count of live objects
   GCGeneration() {
     memory_unaligned = new unsigned char[1024*512];
     size_t start_addr = (size_t)memory_unaligned;
@@ -72,45 +86,49 @@ public:
     next = 0;
     liveObjectCount = 0;
   }
+  
   void Compact() {
    //Go through all memory chunks, find free ones, and move them to the left one by one
-    size_t allocBreak = 0;
-    size_t offset = 0;
-    size_t foundObjects = 0;
+    size_t allocBreak = 0; //Allocation break (objects to left of this are free space, objects to right are in-use)
+    size_t offset = 0; //Current offset
+    size_t foundObjects = 0; //Number of objects still in-use
     while(foundObjects<liveObjectCount) {
     
       if(offset == marker) {
 	//Compaction cycle complete.
 	marker = allocBreak;
-	
-	//  std::cerr<<"Marker updated to "<<marker<<std::endl;;
 	break;
       }
-      size_t fragsz;
+      size_t fragsz; //Size of memory fragment (including headers)
       memcpy(&fragsz,memory+offset,sizeof(fragsz));
-      if(fragsz == 0) {
+      if(fragsz == 0) { //Hmm. We should at least have a header here.
 	throw "memory corrupt";
       }
-      if(MEM_ListLength(memory+offset) == 0) {
-	//std::cerr<<"Free move\n";
+      if(MEM_ListLength(memory+offset) == 0) { //If there's no active pointers, we have a free object.
 	//Free segment found. Move memory from right of this region into current one
 	if((size_t)(memory+offset+fragsz) == marker) {
 	  //End-of-list
 	  break;
 	}
-	//Update all pointers to this memory segment
-	MEM_MovePtr(memory+offset,memory+offset+fragsz);
-	//Copy contents to this segment
-	memcpy(memory+offset,memory+offset+fragsz,*((size_t*)(memory+offset+fragsz)));
-	//Fragment size may have changed. Process before moving to next segment.
-	memcpy(&fragsz,memory+offset,sizeof(fragsz));
-	memset(memory+offset+fragsz+(2*sizeof(size_t)),0,sizeof(size_t)); //TODO: Mark next segment as free
+	
+	unsigned char* dest_position = memory+offset; //Position of current fragment
+	unsigned char* src_position = dest_position+fragsz; //Source block = addressof(current block)+sizeof(current block)
+	while(src_position<memory+genSz) {
+	  //Move object from the right into this position (IMPORTANT NOTE: This segment COULD have gotten smaller, or larger)
+	  MEM_MovePtr(dest_position,src_position);
+	  dest_position += *((size_t*)dest_position);
+	  src_position += *((size_t*)src_position);
+	}
+	
 	
       }else {
 	//Found in use block, make sure the break is after this block
 	allocBreak = offset+fragsz;
 	foundObjects++;
 	//TODO: Promote this block to the next generation of Star Trek.
+	if(next) {
+	  
+	}
       }
       //Move to next segment
       offset+=fragsz;
@@ -208,7 +226,10 @@ extern "C" {
       //Compact
       gen->Compact();
       ptr = gen->Allocate(sz);
+      if(ptr == 0) {
+	throw "counterclockunwise";
       //TODO: Increase total size of pool
+      }
     }
     *output = ptr;
     if(ptr != 0) {
