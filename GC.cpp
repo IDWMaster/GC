@@ -3,7 +3,6 @@
 #include <string.h>
 
 
-
 //Converts an object address to a segment pointer
 static inline void* FindSegmentPointer(void* objAddress) {
   return (void*)*(((size_t*)objAddress)-1);
@@ -21,7 +20,7 @@ static inline void MEM_Init(void* region, size_t sz) {
     //Pointer to beginning of memory region
     //Data segment
   ptr[0] = sz; //Total size (including header)
-  ptr[1] = (size_t)(ptr+3); //Pointer to data segment
+  ptr[1] = (size_t)(ptr+5); //Pointer to data segment
   ptr[2] = 0; //Number of pointers in list (default 0)
   ptr[3] = 0; //Empty pointer
   ptr[4] = (size_t)ptr; //Pointer to allocation header
@@ -68,13 +67,13 @@ static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 
   size_t* destchunk = (size_t*)dest;
   //Copy all data from ptr to destchunk (we assume that it is big enough -- if it isn't, too bad for you; you're gonna have a really rough time debugging this)
   memcpy(destchunk,ptr,*ptr);
-  destchunk[1] = (ptr[1]-(size_t)ptr)+destchunk+capacityChange; //Updated position = segment offset of data segment+destination address+(number of new elements in list)
+  destchunk[1] = (size_t)((ptr[1]-(size_t)ptr)+destchunk+capacityChange); //Updated position = segment offset of data segment+destination address+(number of new elements in list)
   for(size_t i = 0;i<destchunk[2];i++) {
     void** d = (void**)destchunk[i+3];
-    *d = destchunk[1]; //Update all references to point to this new memory address.
+    *d = (void*)destchunk[1]; //Update all references to point to this new memory address.
   }
-  //TODO: Update segment pointer in dest
-  destchunk[3+destchunk[2]] = destchunk; //TODO: Does this work?
+  //Update segment pointer in dest
+  destchunk[3+destchunk[2]] = (size_t)destchunk; //TODO: Does this work?
 }
 
 
@@ -152,23 +151,24 @@ public:
   }
   //Write barrier, mark
   void WB_Mark(void*& ptr) {
-    size_t* realPtr = (size_t*)ptr;
-    if(MEM_ListCapacity(ptr)-MEM_ListLength(ptr) == 0) {
+    size_t* realPtr = (size_t*)FindSegmentPointer(ptr);
+    if(MEM_ListCapacity(realPtr)-MEM_ListLength(realPtr) == 0) {
       //Expand list
-      size_t prevCapacity = MEM_ListCapacity(ptr);
+      size_t prevCapacity = MEM_ListCapacity(realPtr);
       size_t newCapacity = prevCapacity*2;
       //Allocate new block
-      size_t* newmem = (size_t*)Unsafe_Allocate((4*sizeof(size_t))+newCapacity+MEM_DataSize(ptr));
-      MEM_MovePtr(newmem,ptr,newCapacity-prevCapacity);
-      ptr = newmem;
+      size_t* newmem = (size_t*)Unsafe_Allocate((4*sizeof(size_t))+newCapacity+MEM_DataSize(realPtr));
+      MEM_MovePtr(newmem,realPtr,newCapacity-prevCapacity);
+      realPtr = newmem;
     }
     MEM_AddPtr(realPtr,&ptr);
     
   }
   
   void WB_Unmark(void*& ptr) {
-    MEM_RemovePtr(ptr,&ptr);
-    if(MEM_ListLength(ptr) == 0) {
+    void* segptr = FindSegmentPointer(ptr);
+    MEM_RemovePtr(segptr,&ptr);
+    if(MEM_ListLength(segptr) == 0) {
       //Object can be reclaimed (no longer alive)
       liveObjectCount--;
       if(liveObjectCount == 0) {
@@ -231,23 +231,20 @@ extern "C" {
   void GC_Allocate(void* gc,size_t sz, void** output) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
     void* ptr = gen->Allocate(sz);
-    *output = ((void**)ptr)[1];
+    *output = ((void**)ptr)[1]; //Output fast pointer to data segment
     if(ptr != 0) {
-      gen->WB_Mark(ptr);
+      gen->WB_Mark(*output); //MARK pointer
     }
   }
   void GC_Unmark(void* gc,void** ptr) {
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
-    //TODO: Given the memory address of an object, find its corresponding memory segment.
-    throw "Not yet implemented";
+    
     while(!gen->Contains(*ptr)) {
       gen = gen->next;
     }
     gen->WB_Unmark(*ptr);
   }
   void GC_Mark(void* gc,void** ptr) {
-    //TODO: Given the memory address of an object, find its corresponding memory segment.
-    throw "Not yet implemented";
     GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
     while(!gen->Contains(*ptr)) {
       gen = gen->next;

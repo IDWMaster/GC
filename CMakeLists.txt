@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.6)
 project(CPGC)
 add_executable(CPGC GC.cpp main.cpp)
-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I. -std=c++11 -O2")
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I. -std=c++11 -g")
 target_link_libraries(CPGC pthread dl)
