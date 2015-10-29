@@ -12,20 +12,25 @@
 #include <iostream>
 #include <string.h>
 
+using namespace GC;
+
+class SomeClass {
+public:
+  SomeClass() {
+  }
+  void Initialize(const GCHandle<SomeClass>& thisptr) {
+    
+    printf("This is %p\n",this);
+    GCHandle<SomeClass> myptr(thisptr);
+    printf("The pointer points to %p and this points to %p\n",myptr.ptr,this);
+  }
+};
+
 //Main entry point
 int main(int argc, char** argv) {
-  
-  void* pool = GC_Init(1); //Initialize the garbage collector
-  for(size_t i = 0;i<900000;i++) { //Allocate, de-allocate a whole bunch of times
-  
-    void* ptr;
-    
-    GC_Allocate(pool,50,&ptr); //Allocate memory (50 bytes)
-    if(ptr == 0) { //Check if allocation was successful, print error upon failure.
-      std::cerr<<"Allocation error at "<<i<<std::endl;
-      return -1;
-    }
-    GC_Unmark(pool,&ptr); //Unmark this section of memory, such that it can be released by the garbage collector at some point in time.
-  }
+  GCHeap heap(2);
+  GCHandle<SomeClass> m;
+  heap.Construct<SomeClass>(m);
+  m->Initialize(m);
 return 0;
 }
