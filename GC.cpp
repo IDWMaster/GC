@@ -1,12 +1,157 @@
 #include <iostream>
-#include <vector>
 #include <string.h>
 
 
+
+//TODO: Important NOTE -- Memory alignment is INCREDIBLY important here. GCC/G++ will compile the below struct to 24 bytes.
+//Other compilers should be tested to ensure that struct padding is sufficient to prevent alignment faults in case an odd size is selected for this struct.
 //A header containing additional object metadata, which are necessary for proper function of the garbage collection algorithm
 typedef struct {
   void(*Destructor)(void*,void*); //Destructor with heap pointer and object pointer
-} ObjectHeader;
+  bool allocmark;
+  size_t pointerCount; //Number of objects in this object's pointer table  (the pointer table is located before the start of this metadata header)
+} ObjectMetadata;
+
+
+/**
+ * A list that can store plain-old-data elements. This list type will not work for complex types.
+ * */
+template<typename T>
+class PODList {
+public:
+  T* values;
+  //The number of elements in the array
+  size_t count;
+  //The size (capacity) of the array
+  size_t size;
+  PODList() {
+    values = 0;
+    count = 0;
+    size = 0;
+  }
+  void EnsureCapacity() {
+    if(values == 0) {
+      values = new T[1];
+      size = 1;
+      return;
+    }
+    if(count == size) {
+    T* nlist = new T[size*2];
+    memcpy(nlist,values,size*sizeof(T));
+    values = nlist;
+    size*=2;
+    }
+    
+  }
+  /**
+   * Adds an element to the list
+   * @param value The element to add
+   * */
+  void Add(const T& value) {
+    EnsureCapacity();
+    values[count] = value;
+    count++;
+  }
+  /**
+   * Inserts a specified value at a given index, moving all elements to the right
+   * */
+  void InsertAt(size_t index, const T& value) {
+    EnsureCapacity();
+    memmove(values+index+1,values+index,sizeof(T)*(count-index));
+    values[index] = value;
+    count++;
+  }
+  
+  /**
+   * Removes an element at the specified index
+   * @param The index of the element to remove
+   * */
+  void RemoveAt(size_t index) {
+    count--;
+    memmove(values+index,values+index+1,sizeof(T)*(count-index));
+  }
+  T& operator[](size_t index) {
+    return values[index];
+  }
+  ~PODList() {
+    if(values) {
+      delete[] values;
+    }
+  }
+};
+template<typename T>
+class PODSet {
+public:
+  PODList<T> array;
+  PODSet() {
+    
+  }
+  void Insert(const T& value) {
+    if(array.count == 0) {
+      array.Add(value);
+      return;
+    }
+    size_t index;
+    bool found = BSearch(value,index);
+    if(found) {
+      array[index] = value;
+      return;
+    }
+    if(value<array[index]) {
+      //Insert to left of current value
+      array.InsertAt(index,value);
+    }else {
+      //Insert after current value
+      array.InsertAt(index+1,value);
+    }
+    
+  }
+  bool Find(T& value) {
+    size_t index;
+    bool retval = BSearch(value,index);
+    value = array[index];
+    return retval;
+  }
+  bool BSearch(const T& value,size_t& index) {
+    index = 0;
+    size_t start = 0;
+    size_t end = array.count;
+    
+    while(end-start>0) {
+      index = array.count/2;
+      if(array[index] == value) {
+	return true;
+      }
+      if(value<array[index]) {
+	//Go down
+	end = index-1;
+      }else {
+	//Go up
+	start = index+1;
+      }
+    }
+    return false;
+  }
+  
+};
+
+
+
+/*
+ * Full collection algorithm:
+ * Scan through all objects in the heap.
+ * Determine if the object is a root. An object is a root if anything referencing it exists from outside the managed heap (such as executable code; for example)
+ * If the object is a root, recursively follow all pointers going out from that object. Toggle a bit in the ObjectMetadata for that object to indicate that it is allocated (in use).
+ * NEXT:
+ * Scan all objects in the heap. If an object does not have the allocmark bit set, it can be freed. Free the object.
+ * 
+ * Problems with this algorithm:
+ * This algorithm will run through all elements twice. It may be more efficient to track roots as they are allocated, in some sort of external table.
+ * However; this will add a dependency to an OS-specific dynamic memory allocator, which may not be desirable, and could cause the program to take up additional space in memory.
+ * 
+ * 
+ * 
+ * */
 
 
 
@@ -34,7 +179,9 @@ static inline void MEM_Init(void* region, size_t sz) {
   ptr[3] = 0; //Empty pointer
   ptr[4] = (size_t)ptr; //Pointer to allocation header
 }
-
+static inline void* MEM_GetDataPointer(void* region) {
+  return (void*)((size_t*)region)[1];
+}
 //Gets the number of pointer entries that this memory region can store
 static inline size_t MEM_ListCapacity(void* region) {
   size_t* ptr = (size_t*)region;
@@ -75,13 +222,11 @@ static inline size_t MEM_DataSize(void* region) {
 //src -- Source address
 //capacityChange -- Number of new elements to add to the list (amount of capacity increase)
 static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 0) {
-  printf("Move ptr in progress from %p to %p\n",src,dest);
   size_t* ptr = (size_t*)src;
   size_t* destchunk = (size_t*)dest;
   //Copy all data from ptr to destchunk (we assume that it is big enough -- if it isn't, too bad for you; you're gonna have a really rough time debugging this)
   memcpy(destchunk,ptr,*ptr);
   destchunk[1] = (size_t)((ptr[1]-(size_t)ptr)+((size_t)destchunk)+capacityChange); //Updated position = segment offset of data segment+destination address+(number of new elements in list)
-  printf("Updated position chunk to %p\n",(void*)destchunk[1]);
   
   
   for(size_t i = 0;i<destchunk[2];i++) {
@@ -91,17 +236,18 @@ static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 
   //Update segment pointer in dest
   size_t* dataptr = (size_t*)destchunk[1];
   *(dataptr-1) = (size_t)destchunk; //TODO: Does this work?
-  printf("Move ptr complete\n"); 
+  
 }
 
 
 class GCGeneration {
 public:
+  PODSet<size_t> roots;
+  
   unsigned char* memory_unaligned; //Unaligned memory chunk.
   unsigned char* memory; //Memory chunk aligned to machine-specific word size
   size_t marker; //Current marker (in bytes) into free-space
   size_t genSz; //The size of this generation
-  size_t liveObjectCount; //The current count of live objects
   GCGeneration() {
     memory_unaligned = new unsigned char[1024*512];
     size_t start_addr = (size_t)memory_unaligned;
@@ -111,58 +257,56 @@ public:
     genSz = 1024*512-(start_addr-orig_addr);
     marker = 0;
     next = 0;
-    liveObjectCount = 0;
   }
-  
-  void Compact() {
-   //Go through all memory chunks, find free ones, and move them to the left one by one
-    size_t allocBreak = 0; //Allocation break (objects to left of this are free space, objects to right are in-use)
-    size_t offset = 0; //Current offset
-    size_t foundObjects = 0; //Number of objects still in-use
-    while(foundObjects<liveObjectCount) {
-    
-      if(offset == marker) {
-	//Compaction cycle complete.
-	marker = allocBreak;
-	break;
+  void Collect() {
+    auto Mark = [](size_t* ptr) {
+      size_t mtaptr = ((size_t)(MEM_GetDataPointer(ptr)+MEM_DataSize(ptr)))-sizeof(ObjectMetadata); //Memory address of metadata pointer
+      //Assume ObjectMetadata is aligned on a word-sized boundary. If we are wrong; we may get an alignment fault.
+      ObjectMetadata* metadata = (ObjectMetadata*)mtaptr;
+      metadata->allocmark = true;
+      size_t* ptrlist = (size_t*)(mtaptr-(metadata->pointerCount*sizeof(size_t)));
+      for(size_t i = 0;i<metadata->pointerCount;i++) {
+	Mark(ptr); //Mark all descendents
       }
-      size_t fragsz; //Size of memory fragment (including headers)
-      memcpy(&fragsz,memory+offset,sizeof(fragsz));
-      if(fragsz == 0) { //Hmm. We should at least have a header here.
-	throw "memory corrupt";
-      }
-      if(MEM_ListLength(memory+offset) == 0) { //If there's no active pointers, we have a free object.
-	//Free segment found. Move memory from right of this region into current one
-	if((size_t)(memory+offset+fragsz) == marker) {
-	  //End-of-list
-	  break;
-	}
-	
-	unsigned char* dest_position = memory+offset; //Position of current fragment
-	unsigned char* src_position = dest_position+fragsz; //Source block = addressof(current block)+sizeof(current block)
-	while(src_position<memory+genSz) {
-	  //Move object from the right into this position (IMPORTANT NOTE: This segment COULD have gotten smaller, or larger)
-	  MEM_MovePtr(dest_position,src_position);
-	  dest_position += *((size_t*)dest_position);
-	  src_position += *((size_t*)src_position);
-	}
-	
-	
-      }else {
-	//Found in use block, make sure the break is after this block
-	allocBreak = offset+fragsz;
-	foundObjects++;
-	//TODO: Promote this block to the next generation of Star Trek.
-	if(next) {
-	  
-	}
-      }
-      //Move to next segment
-      offset+=fragsz;
       
-      
-    }
-    marker = allocBreak;
+    };
+   for(size_t i = 0;i<roots.array.count;i++) {
+     Mark((size_t*)roots.array[i]);
+   }
+   
+   //Sweep phase
+   //Scan for free space extents, and de-allocate all at once
+   size_t current = memory;
+   bool inExtent = false;
+   size_t extentStart;
+   while(current<memory+marker) {
+     //Scan heap
+     size_t* ptr = (size_t*)current;
+     ObjectMetadata* metadata = ((size_t)(MEM_GetDataPointer(ptr)+MEM_DataSize(ptr)))-sizeof(ObjectMetadata);
+     if(metadata->allocmark) {
+       if(inExtent) { //We've reached the end of an extent. Move everything in the extent over to the left.
+	 //TODO: Free this extent
+	 inExtent = false;
+	 //Shift everything over
+	 for(size_t i = 0;(i+current)<(memory+marker);i+=(size_t*)(i+current)[0]) {
+	   MEM_MovePtr((void*)(extentStart+i),i+current);  
+	 }
+	 //Freed bytes == current address - start of extent
+	 marker-=(current-extentStart);
+	 current = extentStart; //Go back and check the blocks we just moved.
+	 
+       }else {
+	 metadata->allocmark = false;
+	 current+=ptr[0];
+       }
+     }else {
+       if(!inExtent) {
+	 inExtent = true;
+	 extentStart = current;
+       } 
+       current+=ptr[0];
+     }
+   }
   }
   size_t Available() {
     return genSz-marker;
@@ -189,14 +333,7 @@ public:
   void WB_Unmark(void*& ptr) {
     void* segptr = FindSegmentPointer(ptr);
     MEM_RemovePtr(segptr,&ptr);
-    if(MEM_ListLength(segptr) == 0) {
-      //Object can be reclaimed (no longer alive)
-      liveObjectCount--;
-      if(liveObjectCount == 0) {
-	//Set marker to initial position (reduces number of memory fragments and prevents unncessary growth of pool)
-	marker = 0;
-      }
-    }
+    
   }
   void* Unsafe_Allocate(size_t sz) {
     if(sz>Available()) {
@@ -210,12 +347,13 @@ public:
   void* Allocate(size_t sz) {
    //Ensure enough memory for header
       sz+=sizeof(size_t)*5;
+      //Ensure enough memory for footer after object
+      sz+=sizeof(ObjectMetadata);
     //Align memory allocation request 
       sz += sizeof(size_t)-(sz % sizeof(size_t));
       void* retval = Unsafe_Allocate(sz);
       if(retval) {
 	MEM_Init(retval,sz);
-	liveObjectCount++;
 	return retval;
       }
       return 0;
@@ -258,6 +396,13 @@ extern "C" {
     void* ptr = gen->Allocate(sz);
     printf("Allocate block at address %p\n",ptr);
     *output = ((unsigned char*)((void**)ptr)[1]); //Output fast pointer to data segment
+    
+    //Initialize object metadata
+	ObjectMetadata meta;
+	memset(&meta,0,sizeof(meta));
+	memcpy(((unsigned char*)*output)+sz,&meta,sizeof(meta));
+	
+    
     if(ptr != 0) {
       gen->WB_Mark(*output); //MARK pointer
     }

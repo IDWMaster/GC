@@ -68,7 +68,7 @@ public:
     handle.heap = ptr;
     GC_Allocate(ptr,sizeof(T),(void**)&handle.ptr);
     //TODO: Placement NEW
-    new(handle.ptr)T(uments...);
+    new(handle.ptr)T(handle,uments...);
   }
   template<typename T,typename... args>
   GCHandle<T> Construct(args... uments) {

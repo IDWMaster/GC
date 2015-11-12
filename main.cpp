@@ -16,13 +16,13 @@ using namespace GC;
 
 class SomeClass {
 public:
-  SomeClass() {
-  }
-  void Initialize(const GCHandle<SomeClass>& thisptr) {
+  SomeClass(const GCHandle<SomeClass>& thisptr) {
     
     printf("This is %p\n",this);
     GCHandle<SomeClass> myptr(thisptr);
     printf("The pointer points to %p and this points to %p\n",myptr.ptr,this);
+  }
+  ~SomeClass() {
   }
 };
 
@@ -31,6 +31,5 @@ int main(int argc, char** argv) {
   GCHeap heap(2);
   GCHandle<SomeClass> m;
   heap.Construct<SomeClass>(m);
-  m->Initialize(m);
 return 0;
 }
