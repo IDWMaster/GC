@@ -12,24 +12,21 @@
 #include <iostream>
 #include <string.h>
 
-using namespace GC;
 
-class SomeClass {
-public:
-  SomeClass(const GCHandle<SomeClass>& thisptr) {
-    
-    printf("This is %p\n",this);
-    GCHandle<SomeClass> myptr(thisptr);
-    printf("The pointer points to %p and this points to %p\n",myptr.ptr,this);
-  }
-  ~SomeClass() {
-  }
-};
 
 //Main entry point
 int main(int argc, char** argv) {
-  GCHeap heap(2);
-  GCHandle<SomeClass> m;
-  heap.Construct<SomeClass>(m);
+  void* heap = GC_Init(2);
+  void* mclass;
+  void** ptrlist;
+  GC_Allocate(heap,1,1,(void**)&mclass,&ptrlist);
+  //Mark root from C(++) ABI
+  GC_Mark(heap,(void**)&mclass,true);
+  
+  ptrlist[0] = mclass; //This object references itself
+  GC_Mark(heap,ptrlist+0,false); //Track value in garbage collector
+  printf("Object is at address %p\n",mclass);
+  GC_Unmark(heap,(void**)&mclass,true); //We no longer need to reference this object from C(++). Free it.
+  GC_Collect(heap,true); //Force garbage collection of all generations
 return 0;
 }

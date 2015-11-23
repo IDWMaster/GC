@@ -3,84 +3,45 @@
 
 #include <stdio.h>
 #include <new>
+#include <stdint.h>
 extern "C" {
   void* GC_Init(size_t generations);
-  void GC_Allocate(void* gc,size_t sz, void** output);
-  void GC_Unmark(void* gc,void** ptr);
-  void GC_Mark(void* gc,void** ptr);
+  /**
+   * Allocates an object from managed memory
+   * @param gc The heap to allocate from
+   * @param sz The amount of memory to allocate
+   * @param numberOfPointers The number of pointers that the object contains
+   * @param output The memory address to output to
+   * @param ptrList The memory address of the first pointer in the pointer list.
+   */
+  void GC_Allocate(void* gc,size_t sz,size_t numberOfPointers, void** output, void*** ptrList);
+  /**
+   * Unmarks a pointer
+   * @param gc The heap the object is allocated in
+   * @param ptr The memory address to stop tracking
+   * @param isRoot Whether or not this value is a root
+   * */
+  void GC_Unmark(void* gc,void** ptr, bool isRoot);
+  /**
+   * Marks a pointer, causing it to be tracked by the garbage collector
+   * @param gc The heap the object is allocated in
+   * @param ptr The pointer to track
+   * @param isRoot Whether or not this value is a root
+   */
+  void GC_Mark(void* gc,void** ptr, bool isRoot);
+  /**
+   * Forces a garbage collection
+   * @param gc The heap to collect from
+   * @param fullCollection Whether or mot to collect memory from all generations (not just the first one)
+   * */
+  void GC_Collect(void* gc,bool fullCollection);
   
 }
 
 
 #ifdef __cplusplus
 
-
-
-namespace GC {
-template<typename T>
-class GCHandle {
-public:
-  T* ptr;
-  void* heap;
-  GCHandle() {
-    ptr = 0;
-  }
-  GCHandle<T> operator=(const GCHandle<T>& other) {
-    if(ptr) {
-      GC_Unmark(heap,(void**)&ptr);
-    }
-    heap = other.heap;
-    ptr = other.ptr;
-    GC_Mark(heap,(void**)&ptr);
-  }
-  GCHandle(void* heap, const T* objaddr) {
-    this->ptr = (T*)objaddr;
-    this->heap = heap;
-    GC_Mark(heap,(void**)&ptr);
-    
-  }
-  //Copy constructor
-  GCHandle(const GCHandle<T>& other) {
-    ptr = other.ptr;
-   heap = other.heap;
-   GC_Mark(heap,(void**)&ptr);
-  }
-  T* operator->() {
-    return ptr;
-  }
-  T* operator*() {
-    return ptr;
-  }
-  ~GCHandle() {
-    if(ptr) {
-      GC_Unmark(heap,(void**)&ptr);
-    }
-  }
-};
-class GCHeap {
-public:
-  void* ptr;
-  GCHeap(int generations) {
-    ptr = GC_Init(generations);
-  }
-  template<typename T, typename... args>
-  void Construct(GCHandle<T>& handle, args... uments) {
-    handle.heap = ptr;
-    GC_Allocate(ptr,sizeof(T),(void**)&handle.ptr);
-    //TODO: Placement NEW
-    new(handle.ptr)T(handle,uments...);
-  }
-  template<typename T,typename... args>
-  GCHandle<T> Construct(args... uments) {
-    GCHandle<T> retval;
-    Construct(retval,uments...);
-    return retval;
-  }
-  ~GCHeap() {
-    
-  }
-};
-}
+//TODO: Possible C++ interface to the GC API. 
 #endif
 
 
