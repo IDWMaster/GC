@@ -128,9 +128,8 @@ static void* currentGC;
       index = 0;
       ssize_t start = 0;
       ssize_t end = array.count;
-      
       while(end-start>0) {
-	index = end/2;
+	index = ((end-start)/2)+start;
 	if(array[index] == value) {
 	  return true;
 	}
