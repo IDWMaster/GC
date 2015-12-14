@@ -1,7 +1,7 @@
   #include <iostream>
   #include <string.h>
-
-
+#include "GC.h"
+static void* currentGC;
 
   //TODO: Important NOTE -- Memory alignment is INCREDIBLY important here. GCC/G++ will compile the below struct to 24 bytes.
   //Other compilers should be tested to ensure that struct padding is sufficient to prevent alignment faults in case an odd size is selected for this struct.
@@ -126,11 +126,11 @@
     }
     bool BSearch(const T& value,size_t& index) {
       index = 0;
-      size_t start = 0;
-      size_t end = array.count;
+      ssize_t start = 0;
+      ssize_t end = array.count;
       
       while(end-start>0) {
-	index = array.count/2;
+	index = end/2;
 	if(array[index] == value) {
 	  return true;
 	}
@@ -213,6 +213,16 @@
     rptr[3+rptr[2]] = (size_t)ptr;
     rptr[2]++;
   }
+  
+  //Computes the length of the data segment of this memory region.
+  static inline size_t MEM_DataSize(void* region) {
+    size_t* ptr = (size_t*)region;
+    return ptr[1]-(size_t)ptr;
+  }
+  static inline ObjectMetadata* MEM_FindMetadata(void* ptr) {
+    size_t mtaptr = ((size_t)((size_t)MEM_GetDataPointer(ptr)+MEM_DataSize(ptr)))-sizeof(ObjectMetadata); //Memory address of metadata pointer
+    return (ObjectMetadata*)mtaptr;
+  }
   //Removes a pointer from the list, decrementing its length by one.
   static inline void MEM_RemovePtr(void* region, void* ptr) {
     size_t* meta_start = (size_t*)region;
@@ -224,11 +234,12 @@
     memmove(rptr+i,rptr+meta_start[2],(meta_start[2]*sizeof(size_t))-(i*sizeof(size_t)));
     meta_start[2]--;
   }
-  //Computes the length of the data segment of this memory region.
-  static inline size_t MEM_DataSize(void* region) {
-    size_t* ptr = (size_t*)region;
-    return ptr[1]-(size_t)ptr;
-  }
+  
+  //TODO: This is a bit more complicated than originally thought.
+  //Interior pointers (pointers to other managed objects) are a special case and have to be updated with new write barriers (each one will need to be unmarked prior to moving, and re-marked after moving).
+  //This could be a bit tricky to implement.
+  
+  
   //Updates all pointers to an object, from the src memory chunk to the dest memory chunk
   //dest -- Destination address to copy to
   //src -- Source address
@@ -236,10 +247,15 @@
   static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 0) {
     size_t* ptr = (size_t*)src;
     size_t* destchunk = (size_t*)dest;
-    //Copy all data from ptr to destchunk (we assume that it is big enough -- if it isn't, too bad for you; you're gonna have a really rough time debugging this)
-    memcpy(destchunk,ptr,*ptr);
-    destchunk[1] = (size_t)((ptr[1]-(size_t)ptr)+((size_t)destchunk)+capacityChange); //Updated position = segment offset of data segment+destination address+(number of new elements in list)
     
+    printf("Move object of size %i\n",(int)*ptr);
+    destchunk[0] = ptr[0]+capacityChange;
+    destchunk[1] = (size_t)((ptr[1]-(size_t)ptr)+((size_t)destchunk)+capacityChange); //Updated position = segment offset of data segment+destination address+(size of new elements in list)
+    destchunk[2] = ptr[2];
+    //Copy pointers
+    memcpy(destchunk+3,ptr+3,ptr[2]*sizeof(size_t));
+    //Copy data over
+    memcpy((void*)destchunk[1],(void*)ptr[1],MEM_DataSize(ptr));
     
     for(size_t i = 0;i<destchunk[2];i++) {
       void** d = (void**)destchunk[i+3];
@@ -248,6 +264,20 @@
     //Update segment pointer in dest
     size_t* dataptr = (size_t*)destchunk[1];
     *(dataptr-1) = (size_t)destchunk; //TODO: Does this work?
+    
+    //TODO: Update all interior pointers
+    ObjectMetadata* oldmta = MEM_FindMetadata(src);
+    ObjectMetadata* newmta = MEM_FindMetadata(dest);
+    size_t* oldptrs = (size_t*)(oldmta+1);
+    size_t* newptrs = (size_t*)(newmta+1);
+    size_t ptrcount = oldmta->pointerCount; //Copy value to stack for faster performance
+    for(size_t i = 0;i<ptrcount;i++) {
+      if(oldptrs[i]) {
+	GC_Unmark(currentGC,(void**)(oldptrs+i),false); //TODO: Branch optimization -- Can we convince the compiler to inline these calls, maybe ask it nicely or give it a cookie?
+	GC_Mark(currentGC,(void**)(newptrs+i),false);
+      }
+    }
+    
     
   }
 
@@ -276,7 +306,7 @@
 	//Assume ObjectMetadata is aligned on a word-sized boundary. If we are wrong; we may get an alignment fault.
 	ObjectMetadata* metadata = (ObjectMetadata*)mtaptr;
 	metadata->allocmark = true;
-	size_t* ptrlist = (size_t*)(mtaptr-(metadata->pointerCount*sizeof(size_t)));
+	size_t* ptrlist = (size_t*)(MEM_FindMetadata(ptr)+1);
 	for(size_t i = 0;i<metadata->pointerCount;i++) {
 	  if(ptrlist[i]) {
 	    Mark((size_t*)ptrlist[i]); //Mark all descendents
@@ -294,7 +324,7 @@
     size_t current = (size_t)memory;
     bool inExtent = false;
     size_t extentStart;
-    
+    //Free an extent (Raw memory)
     auto freeExtent = [&](){
       //TODO: Free this extent
 	  inExtent = false;
@@ -306,7 +336,17 @@
 	  marker-=(current-extentStart);
 	  current = extentStart;
     };
-    
+    //Free an object
+    auto freeObj = [&](void* ptr) {
+      ObjectMetadata* md = MEM_FindMetadata(ptr);
+      void** ptrList = (void**)(md+1);
+      size_t ptrCount = md->pointerCount;
+      for(size_t i = 0;i<ptrCount;i++) {
+	if(ptrList[i]) {
+	  WB_Unmark(ptrList[i]);
+	}
+      }
+    };
     while(current<(size_t)(memory+marker)) {
       //Scan heap
       size_t* ptr = (size_t*)current;
@@ -316,6 +356,8 @@
 	  //Object has a finalizer registered, add it to our finalizer queue.
 	  //NOTE: The object must remain pinned in memory until the next GC cycle.
 	  //TODO: Somehow ensure the object doesn't move.
+	  printf("Finalizer queue doesn't work quite yet....\n");
+	  abort();
 	  FinalizerQueue.Add(current);
 	}
 	if(inExtent) { //We've reached the end of an extent. Move everything in the extent over to the left.
@@ -325,6 +367,7 @@
 	  current+=ptr[0];
 	}
       }else {
+	freeObj((void*)current);
 	if(!inExtent) {
 	  inExtent = true;
 	  extentStart = current;
@@ -350,7 +393,7 @@
 	size_t prevCapacity = MEM_ListCapacity(realPtr);
 	size_t newCapacity = prevCapacity*2;
 	//Allocate new block
-	size_t* newmem = (size_t*)Unsafe_Allocate((4*sizeof(size_t))+(newCapacity*sizeof(size_t))+MEM_DataSize(realPtr));
+	size_t* newmem = (size_t*)Unsafe_Allocate(realPtr[0]+((newCapacity-prevCapacity)*sizeof(size_t)));
 	MEM_MovePtr(newmem,realPtr,(newCapacity-prevCapacity)*sizeof(size_t));
 	realPtr = newmem;
 	ptr = (void*)newmem[1];
@@ -420,7 +463,9 @@
   };
   extern "C" {
     void* GC_Init(size_t generations) {
-      return new GCPool(generations);
+      auto bot = new GCPool(generations);
+      currentGC = bot;
+      return bot;
     }
     void GC_Allocate(void* gc,size_t sz, size_t numberOfPointers, void** output, void*** ptrList) {
       GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
@@ -429,12 +474,13 @@
       *output = ((unsigned char*)((void**)ptr)[1]); //Output fast pointer to data segment
       
       //Initialize object metadata
-	  ObjectMetadata meta;
-	  memset(&meta,0,sizeof(meta)+(sizeof(size_t)*numberOfPointers));
-	  meta.pointerCount = numberOfPointers;
-	  memcpy(((unsigned char*)*output)+sz,&meta,sizeof(meta));
+      ObjectMetadata* meta = MEM_FindMetadata(ptr);
+      size_t* list = (size_t*)(meta+1);
+	  meta->pointerCount = numberOfPointers;
+	  
+	    memset(list,0,numberOfPointers*sizeof(size_t));
 	  if(ptrList) {
-	    *ptrList = (void**)(((unsigned char*)*output)+sz+sizeof(meta));
+	    *ptrList = (void**)list;
 	  }
     }
     void GC_Unmark(void* gc,void** ptr, bool isRoot) {
@@ -460,7 +506,7 @@
       }
       gen->WB_Mark(*ptr);
     }
-    void GC_Collect(void* gc) {
+    void GC_Collect(void* gc, bool fullCollection) {
       GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
       gen->Collect();
     }

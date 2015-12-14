@@ -4,7 +4,13 @@
 #include <stdio.h>
 #include <new>
 #include <stdint.h>
+
+
+
+
+#ifdef __cplusplus
 extern "C" {
+#endif
   void* GC_Init(size_t generations);
   /**
    * Allocates an object from managed memory
@@ -35,13 +41,17 @@ extern "C" {
    * @param fullCollection Whether or mot to collect memory from all generations (not just the first one)
    * */
   void GC_Collect(void* gc,bool fullCollection);
-  
+#ifdef __cplusplus
 }
+#endif
+
 
 
 #ifdef __cplusplus
 
 //TODO: Possible C++ interface to the GC API. 
+
+
 #endif
 
 
