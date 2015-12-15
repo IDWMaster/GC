@@ -244,12 +244,11 @@ static void* currentGC;
   //src -- Source address
   //capacityChange -- Number of new elements to add to the list (amount of capacity increase)
   static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 0) {
-    printf("Move from %p to %p\n",src,dest);
+    
     if(dest == 0) {abort();};
     size_t* ptr = (size_t*)src;
     size_t* destchunk = (size_t*)dest;
     
-    printf("Move object of size %i\n",(int)*ptr);
     destchunk[0] = ptr[0]+capacityChange;
     destchunk[1] = (size_t)((ptr[1]-(size_t)ptr)+((size_t)destchunk)+capacityChange); //Updated position = segment offset of data segment+destination address+(size of new elements in list)
     destchunk[2] = ptr[2];
@@ -387,8 +386,6 @@ static void* currentGC;
     //Write barrier, mark
     void WB_Mark(void*& ptr) {
       size_t* realPtr = (size_t*)FindSegmentPointer(ptr);
-      printf("Mark at address %p\n",realPtr);
-      printf("WB mark -- Available space in list == %i out of %i used\n",(int)MEM_ListLength(realPtr),(int)MEM_ListCapacity(realPtr));
       if(MEM_ListCapacity(realPtr)-MEM_ListLength(realPtr) == 0) {
 	//Expand list
 	size_t prevCapacity = MEM_ListCapacity(realPtr);
@@ -473,7 +470,7 @@ static void* currentGC;
     void GC_Allocate(void* gc,size_t sz, size_t numberOfPointers, void** output, void*** ptrList) {
       GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
       void* ptr = gen->Allocate(sz+sizeof(ObjectMetadata)+(numberOfPointers*sizeof(size_t)));
-      printf("Allocate block at address %p\n",ptr);
+      
       *output = ((unsigned char*)((void**)ptr)[1]); //Output fast pointer to data segment
       
       //Initialize object metadata
