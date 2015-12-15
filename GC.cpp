@@ -125,20 +125,20 @@ static void* currentGC;
       return retval;
     }
     bool BSearch(const T& value,size_t& index) {
-      index = 0;
-      ssize_t start = 0;
-      ssize_t end = array.count;
-      while(end-start>0) {
-	index = ((end-start)/2)+start;
-	if(array[index] == value) {
-	  return true;
-	}
-	if(value<array[index]) {
-	  //Go down
-	  end = index-1;
+      ssize_t min = 0;
+      ssize_t max = array.count-1;
+      T elem;
+      while(min<=max) {
+	index = (min+max)/2;
+	elem = array[index];
+	if(elem<value) {
+	  min = index+1;
 	}else {
-	  //Go up
-	  start = index+1;
+	  if(elem>value) {
+	    max = index-1;
+	  }else {
+	    return true;
+	  }
 	}
       }
       return false;
@@ -230,7 +230,7 @@ static void* currentGC;
     size_t i;
     for(i = 0;rptr[i] != (size_t)ptr;i++) {};
     //meta_Start[2] is number of pointers in list
-    memmove(rptr+i,rptr+meta_start[2],(meta_start[2]*sizeof(size_t))-(i*sizeof(size_t)));
+    memmove(rptr+i,rptr+i+1,(meta_start[2]*sizeof(size_t))-(i*sizeof(size_t))); //MOVE: Destination = found address, source = found address+1, 
     meta_start[2]--;
   }
   
@@ -244,6 +244,8 @@ static void* currentGC;
   //src -- Source address
   //capacityChange -- Number of new elements to add to the list (amount of capacity increase)
   static inline size_t MEM_MovePtr(void* dest, void* src, size_t capacityChange = 0) {
+    printf("Move from %p to %p\n",src,dest);
+    if(dest == 0) {abort();};
     size_t* ptr = (size_t*)src;
     size_t* destchunk = (size_t*)dest;
     
@@ -408,6 +410,8 @@ static void* currentGC;
     }
     void* Unsafe_Allocate(size_t sz) {
       if(sz>Available()) {
+	printf("TODO: OOM (requested %i bytes of memory, but only %i available), collect garbage here\n",(int)sz,(int)Available());
+	abort();
 	return 0;
       }
       void* retval = memory+marker;
