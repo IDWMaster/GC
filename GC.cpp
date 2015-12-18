@@ -118,7 +118,6 @@ static void* currentGC;
       if(retval) {
 	array.RemoveAt(index);
       }else {
-	//TODO: Fixme
 	printf("Value %p not found. First value is %p\n",(void*)value,(void*)array[0]);
 	abort();
       }
@@ -383,7 +382,9 @@ static void* currentGC;
     size_t Available() {
       return genSz-marker;
     }
-    //Write barrier, mark
+    /**
+     * Adds a pointer that is referencing the specified object, increasing the size of its pointer list.
+     * */
     void WB_Mark(void*& ptr) {
       size_t* realPtr = (size_t*)FindSegmentPointer(ptr);
       if(MEM_ListCapacity(realPtr)-MEM_ListLength(realPtr) == 0) {
@@ -407,9 +408,8 @@ static void* currentGC;
     }
     void* Unsafe_Allocate(size_t sz) {
       if(sz>Available()) {
-	printf("TODO: OOM (requested %i bytes of memory, but only %i available), collect garbage here\n",(int)sz,(int)Available());
-	abort();
-	return 0;
+	Collect(); //Colect garbage
+	return Unsafe_Allocate(sz); //Recursively call until allocation succeeds.
       }
       void* retval = memory+marker;
       marker+=sz;
@@ -433,6 +433,7 @@ static void* currentGC;
 	return 0;
     }
     GCGeneration* next;
+    //Checks to see if the current heap contains a given pointer.
     bool Contains(void*& ptr) {
       //Don't need segment pointer here. Should still be within bounds.
       size_t c = (size_t)ptr;
@@ -440,6 +441,7 @@ static void* currentGC;
       size_t b = (size_t)memory+marker;
       return c>=a && c<=b;
     }
+    //Destroys a given heap (generation)
     ~GCGeneration() {
       delete[] memory_unaligned;
       if(next) {
@@ -450,6 +452,7 @@ static void* currentGC;
 
 
 
+  //A pool of garbage-collected generations
   class GCPool {
   public:
     //The VERY FIRST generation of Star Trek!
@@ -462,11 +465,13 @@ static void* currentGC;
     }
   };
   extern "C" {
+    //Initializes the garbage collector.
     void* GC_Init(size_t generations) {
       auto bot = new GCPool(generations);
       currentGC = bot;
       return bot;
     }
+    //Allocates memory from the garbage-collected heap. 
     void GC_Allocate(void* gc,size_t sz, size_t numberOfPointers, void** output, void*** ptrList) {
       GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
       void* ptr = gen->Allocate(sz+sizeof(ObjectMetadata)+(numberOfPointers*sizeof(size_t)));
@@ -483,11 +488,11 @@ static void* currentGC;
 	    *ptrList = (void**)list;
 	  }
     }
+    //Unmarks a pointer, removing it from the list of valid pointers.
     void GC_Unmark(void* gc,void** ptr, bool isRoot) {
       GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
       
       while(!gen->Contains(*ptr)) {
-	printf("Object %p not found. Moving to newer generation of Star Trek....\n",*ptr);
 	gen = gen->next;
       }
       if(isRoot) {
