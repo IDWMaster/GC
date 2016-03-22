@@ -1,6 +1,8 @@
 #include <iostream>
 #include <string.h>
 #include "GC.h"
+#include <set>
+#include <vector>
 static void* currentGC;
 
   //TODO: Important NOTE -- Memory alignment is INCREDIBLY important here. GCC/G++ will compile the below struct to 24 bytes.
@@ -13,138 +15,7 @@ static void* currentGC;
   } ObjectMetadata;
 
 
-  /**
-  * A list that can store plain-old-data elements. This list type will not work for complex types.
-  * */
-  template<typename T>
-  class PODList {
-  public:
-    T* values;
-    //The number of elements in the array
-    size_t count;
-    //The size (capacity) of the array
-    size_t size;
-    PODList() {
-      values = 0;
-      count = 0;
-      size = 0;
-    }
-    void EnsureCapacity() {
-      if(values == 0) {
-	values = new T[1];
-	size = 1;
-	return;
-      }
-      if(count == size) {
-      T* nlist = new T[size*2];
-      memcpy(nlist,values,size*sizeof(T));
-      values = nlist;
-      size*=2;
-      }
-      
-    }
-    /**
-    * Adds an element to the list
-    * @param value The element to add
-    * */
-    void Add(const T& value) {
-      EnsureCapacity();
-      values[count] = value;
-      count++;
-    }
-    /**
-    * Inserts a specified value at a given index, moving all elements to the right
-    * */
-    void InsertAt(size_t index, const T& value) {
-      EnsureCapacity();
-      memmove(values+index+1,values+index,sizeof(T)*(count-index));
-      values[index] = value;
-      count++;
-    }
-    
-    /**
-    * Removes an element at the specified index
-    * @param The index of the element to remove
-    * */
-    void RemoveAt(size_t index) {
-      count--;
-      memmove(values+index,values+index+1,sizeof(T)*(count-index));
-    }
-    T& operator[](size_t index) {
-      return values[index];
-    }
-    ~PODList() {
-      if(values) {
-	delete[] values;
-      }
-    }
-  };
-  template<typename T>
-  class PODSet {
-  public:
-    PODList<T> array;
-    PODSet() {
-      
-    }
-    void Insert(const T& value) {
-      if(array.count == 0) {
-	array.Add(value);
-	return;
-      }
-      size_t index;
-      bool found = BSearch(value,index);
-      if(found) {
-	array[index] = value;
-	return;
-      }
-      if(value<array[index]) {
-	//Insert to left of current value
-	array.InsertAt(index,value);
-      }else {
-	//Insert after current value
-	array.InsertAt(index+1,value);
-      }
-      
-    }
-    bool Find(T& value) {
-      size_t index;
-      bool retval = BSearch(value,index);
-      value = array[index];
-      return retval;
-    }
-    bool Remove(const T& value) {
-      size_t index;
-      bool retval = BSearch(value,index);
-      if(retval) {
-	array.RemoveAt(index);
-      }else {
-	printf("Value %p not found. First value is %p\n",(void*)value,(void*)array[0]);
-	abort();
-      }
-      return retval;
-    }
-    bool BSearch(const T& value,size_t& index) {
-      ssize_t min = 0;
-      ssize_t max = array.count-1;
-      T elem;
-      while(min<=max) {
-	index = (min+max)/2;
-	elem = array[index];
-	if(elem<value) {
-	  min = index+1;
-	}else {
-	  if(elem>value) {
-	    max = index-1;
-	  }else {
-	    return true;
-	  }
-	}
-      }
-      return false;
-    }
-    
-  };
-
+  
 
 
   /*
@@ -271,8 +142,8 @@ static void* currentGC;
 
   class GCGeneration {
   public:
-    PODSet<size_t> roots;
-    PODList<size_t> FinalizerQueue;
+    std::set<size_t> roots;
+    std::vector<size_t> FinalizerQueue;
     unsigned char* memory_unaligned; //Unaligned memory chunk.
     unsigned char* memory; //Memory chunk aligned to machine-specific word size
     size_t marker; //Current marker (in bytes) into free-space
@@ -302,8 +173,9 @@ static void* currentGC;
     }
     void Collect() {
       printf("DEBUG: GC in progress\n");
-    for(size_t i = 0;i<roots.array.count;i++) {
-      Mark(*(size_t**)roots.array[i]);
+    for(auto i = roots.begin();i!= roots.end();i++) {
+      size_t val = *i;
+      Mark((size_t*)val);
     }
     
     //Sweep phase
@@ -345,7 +217,7 @@ static void* currentGC;
 	  //TODO: Somehow ensure the object doesn't move.
 	  printf("Finalizer queue doesn't work quite yet....\n");
 	  abort();
-	  FinalizerQueue.Add(current);
+	  //FinalizerQueue.Add(current);
 	}
 	if(inExtent) { //We've reached the end of an extent. Move everything in the extent over to the left.
 	  freeExtent();
@@ -485,7 +357,7 @@ static void* currentGC;
 	gen = gen->next;
       }
       if(isRoot) {
-	gen->roots.Remove((size_t)ptr);
+	gen->roots.erase((size_t)ptr);
       }
       gen->WB_Unmark(*ptr);
     }
@@ -496,7 +368,7 @@ static void* currentGC;
 	gen = gen->next;
       }
       if(isRoot) {
-	gen->roots.Insert((size_t)ptr);
+	gen->roots.insert((size_t)ptr);
       }
       gen->WB_Mark(*ptr);
     }
