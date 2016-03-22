@@ -1,5 +1,5 @@
-  #include <iostream>
-  #include <string.h>
+#include <iostream>
+#include <string.h>
 #include "GC.h"
 static void* currentGC;
 
@@ -264,18 +264,6 @@ static void* currentGC;
     size_t* dataptr = (size_t*)destchunk[1];
     *(dataptr-1) = (size_t)destchunk; //TODO: Does this work?
     
-    //TODO: Update all interior pointers
-    ObjectMetadata* oldmta = MEM_FindMetadata(src);
-    ObjectMetadata* newmta = MEM_FindMetadata(dest);
-    size_t* oldptrs = (size_t*)(oldmta+1);
-    size_t* newptrs = (size_t*)(newmta+1);
-    size_t ptrcount = oldmta->pointerCount; //Copy value to stack for faster performance
-    for(size_t i = 0;i<ptrcount;i++) {
-      if(oldptrs[i]) {
-	GC_Unmark(currentGC,(void**)(oldptrs+i),false); //TODO: Branch optimization -- Can we convince the compiler to inline these calls, maybe ask it nicely or give it a cookie?
-	GC_Mark(currentGC,(void**)(newptrs+i),false);
-      }
-    }
     
     
   }
@@ -313,7 +301,7 @@ static void* currentGC;
 	}
     }
     void Collect() {
-      
+      printf("DEBUG: GC in progress\n");
     for(size_t i = 0;i<roots.array.count;i++) {
       Mark(*(size_t**)roots.array[i]);
     }
@@ -472,8 +460,9 @@ static void* currentGC;
       return bot;
     }
     //Allocates memory from the garbage-collected heap. 
-    void GC_Allocate(void* gc,size_t sz, size_t numberOfPointers, void** output, void*** ptrList) {
-      GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
+    void GC_Allocate(size_t sz, size_t numberOfPointers, void** output, void*** ptrList) {
+      
+      GCGeneration* gen = ((GCPool*)currentGC)->firstGeneration;
       void* ptr = gen->Allocate(sz+sizeof(ObjectMetadata)+(numberOfPointers*sizeof(size_t)));
       
       *output = ((unsigned char*)((void**)ptr)[1]); //Output fast pointer to data segment
@@ -489,8 +478,8 @@ static void* currentGC;
 	  }
     }
     //Unmarks a pointer, removing it from the list of valid pointers.
-    void GC_Unmark(void* gc,void** ptr, bool isRoot) {
-      GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
+    void GC_Unmark(void** ptr, bool isRoot) {
+      GCGeneration* gen = ((GCPool*)currentGC)->firstGeneration;
       
       while(!gen->Contains(*ptr)) {
 	gen = gen->next;
@@ -500,8 +489,8 @@ static void* currentGC;
       }
       gen->WB_Unmark(*ptr);
     }
-    void GC_Mark(void* gc,void** ptr, bool isRoot) {
-      GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
+    void GC_Mark(void** ptr, bool isRoot) {
+      GCGeneration* gen = ((GCPool*)currentGC)->firstGeneration;
       
       while(!gen->Contains(*ptr)) {
 	gen = gen->next;
@@ -511,8 +500,8 @@ static void* currentGC;
       }
       gen->WB_Mark(*ptr);
     }
-    void GC_Collect(void* gc, bool fullCollection) {
-      GCGeneration* gen = ((GCPool*)gc)->firstGeneration;
+    void GC_Collect(bool fullCollection) {
+      GCGeneration* gen = ((GCPool*)currentGC)->firstGeneration;
       gen->Collect();
     }
   }
